@@ -13,6 +13,9 @@
 #define Okapi_b 0.35
 #define Okapi_k3 5.0
 
+#define R_a 0.7
+#define R_b 0.15
+
 #define MAXCAND 100
 #define cout std::cout
 #define endl std::endl
@@ -117,7 +120,7 @@ void load_raw_TF(
             if(vid_2==-1)
                 term = vocab[vid_1];
             else
-                term = vocab[vid_1] + vocab[vid_2];
+                term = vocab[vid_1] + " " + vocab[vid_2];
 
             term_id = IDF.size();
             termDic.insert(term, term_id);
@@ -162,10 +165,9 @@ public:
     int maxFreq;
     int length;
 
-    Query(int Dim, tinyxml2::XMLElement* topicElement, 
-        lexiTree& voc, 
-        std::vector<float>const& IDF)
-    :maxFreq(0), length(0), dim(Dim), vec(Dim, 0.)
+    Query(tinyxml2::XMLElement* topicElement, 
+        lexiTree const& voc)
+    :maxFreq(0), length(0), dim(voc.size), vec(voc.size, 0.)
     {
         std::string number = topicElement->FirstChildElement("number")->GetText();
         std::string title = topicElement->FirstChildElement("title")->GetText();
@@ -179,7 +181,7 @@ public:
         _process(narrative, voc);
         _process(concepts, voc);
 
-        normalize(IDF);
+        normalize();
     }
     float match(Document& doc){
         float out = 0.;
@@ -189,7 +191,7 @@ public:
         return out;
     }
 private:
-    void update(std::string const& str, lexiTree& voc){
+    void update(std::string const& str, lexiTree const& voc){
         int index = voc.wordIndex(str);
 
         if(index>=0 && index < vec.size()){
@@ -197,13 +199,13 @@ private:
             maxFreq = std::max(maxFreq, (int)vec[index]);
         }
     }
-    void normalize(std::vector<float>const& IDF){
+    void normalize(){
         for(int j = 0; j < dim; j++){
             float& qtf = vec[j];
-            qtf = ((Okapi_k3+1)*qtf / (Okapi_k3+qtf));//*IDF[j];
+            qtf = ((Okapi_k3+1)*qtf / (Okapi_k3+qtf));
         }
     }
-    void _process(std::string const& text, lexiTree& voc){
+    void _process(std::string const& text, lexiTree const& voc){
         // reference: https://stackoverflow.com/questions/2852895/c-iterate-or-split-utf-8-string-into-array-of-symbols
         char* str = (char*)text.c_str();    // utf-8 string
         char* str_i = str;                  // string iterator
@@ -221,7 +223,8 @@ private:
             std::string word(symbol, end);
             // cout << lastword + word << " ";
             update(word, voc);
-            update(lastword+word, voc);
+            if(lastword.size()>0)
+                update(lastword+" "+word, voc);
             lastword = word;
         }
         while ( str_i < end );
@@ -234,6 +237,36 @@ float get_avg_doclen(std::vector<Document> const& docs){
         a += d.length;
     }
     return a / docs.size();
+}
+
+void load_queries(
+    std::string const& name,
+    lexiTree const& vocab,
+    std::vector<Query>& qlist
+    )
+{
+    tinyxml2::XMLDocument doc;
+    tinyxml2::XMLError eResult = doc.LoadFile(name.c_str());
+    tinyxml2::XMLElement* topicElement = doc.FirstChildElement("xml")->FirstChildElement("topic");
+    if (topicElement == nullptr) cout << "ERROR: XML element parsing error." << endl;
+    
+    while (topicElement != nullptr){
+        qlist.push_back(Query(topicElement, vocab));
+        topicElement = topicElement->NextSiblingElement("topic");
+    }
+}
+
+void feedback(
+    Query& query,
+    std::vector<Document> const& tfdocs,
+    std::vector<int> const& rel
+    )
+{
+    std::vector<bool> relmap(DOC_SZ, false);
+    for(auto i: rel)
+        relmap[i] = true;
+
+    
 }
 
 int main(int argc, char** argv){
@@ -263,25 +296,22 @@ int main(int argc, char** argv){
     load_raw_TF(freq_name, vocab, TF_docs, IDF, bigram);
     int TERM_SZ = IDF.size();
     cout << "[info] Term size: " << TERM_SZ << endl;
-
+    assert(TERM_SZ==bigram.size);
     float avgdl = get_avg_doclen(TF_docs);
     // matrix normalization
     for(auto& d : TF_docs){
         d.normalize(avgdl, IDF);
     }
 
-    tinyxml2::XMLDocument doc;
-    tinyxml2::XMLError eResult = doc.LoadFile(&query_name[0]);
-    tinyxml2::XMLElement* topicElement = doc.FirstChildElement("xml")->FirstChildElement("topic");
-    if (topicElement == nullptr) cout << "ERROR: XML element parsing error." << endl;
     std::vector<Query> QList;
+    load_queries(query_name, bigram, QList);
     Kmax<float, int> maxScores(MAXCAND);
+
+
     std::fstream writer(output_name, std::fstream::out);
     writer << "query_id,retrieved_docs";
-    while (topicElement != nullptr)
-    {
-        Query query(TERM_SZ, topicElement, bigram, IDF);
 
+    for(auto& query: QList){
         maxScores.clear();
         for(int i = 0; i < DOC_SZ; i++){
             float score = query.match(TF_docs[i]);
@@ -289,14 +319,12 @@ int main(int argc, char** argv){
         }
         std::vector<int> top_candidates;
         maxScores.sort();
-        maxScores.print();
+        // maxScores.print();
         maxScores.extract(top_candidates);
 
         writer << endl << query.qid << ",";
         for(auto id : top_candidates){
             writer << docname[id] << " ";
         }
-
-        topicElement = topicElement->NextSiblingElement("topic");
     }
 }
