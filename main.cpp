@@ -33,7 +33,6 @@ public:
     Document(int docid): id(docid), maxFreq(0), length(0) { };
     
     void normalize(int avgdl, std::vector<float>const& IDF){
-        float s = 0.7;
         float norm = 0.;
         if(maxFreq<=0)
             cout << "WARNING: file with id " << id << " has 0 term frequency." << endl;
@@ -265,8 +264,24 @@ void feedback(
     std::vector<bool> relmap(DOC_SZ, false);
     for(auto i: rel)
         relmap[i] = true;
+    std::vector<float>& vec = query.vec;
+    std::vector<float> pos(vec.size(), 0.);
+    std::vector<float> neg(vec.size(), 0.);
 
-    
+    for(int i = 0; i < DOC_SZ; i++){
+        auto const& doc = tfdocs[i];
+        for(int j = 0; j < doc.tid.size(); j++){
+            if(relmap[i]){
+                pos[doc.tid[j]] += doc.freq[j];
+            }else{
+                neg[doc.tid[j]] += doc.freq[j];
+            }
+        }
+    }
+
+    for(int j = 0; j < vec.size(); j++){
+        vec[j] = R_a*vec[j] + R_b*pos[j]/rel.size() - (1. - R_a - R_b)*neg[j]/(DOC_SZ - rel.size());
+    }
 }
 
 int main(int argc, char** argv){
@@ -311,20 +326,34 @@ int main(int argc, char** argv){
     std::fstream writer(output_name, std::fstream::out);
     writer << "query_id,retrieved_docs";
 
-    for(auto& query: QList){
+    for(int q = 0; q < QList.size(); q++){
+        auto& query = QList[q];
+        std::vector<int> top_candidates;
+
+        maxScores.clear();
+        for(int i = 0; i < DOC_SZ; i++){
+            float score = query.match(TF_docs[i]);
+            maxScores.insert(score, i);
+        }        
+        maxScores.extract(top_candidates);
+
+        feedback(query, TF_docs, top_candidates);
+
         maxScores.clear();
         for(int i = 0; i < DOC_SZ; i++){
             float score = query.match(TF_docs[i]);
             maxScores.insert(score, i);
         }
-        std::vector<int> top_candidates;
         maxScores.sort();
-        // maxScores.print();
         maxScores.extract(top_candidates);
 
         writer << endl << query.qid << ",";
         for(auto id : top_candidates){
             writer << docname[id] << " ";
         }
+
+        std::string bar(30, '.');
+        std::fill(bar.begin(), bar.begin() + (int)std::floor(30*(q+1) / QList.size()),'=');
+        std::cerr << "(" << q+1 << "/" << QList.size() << ") queries done. Progress [" << bar << "]\r";
     }
 }
