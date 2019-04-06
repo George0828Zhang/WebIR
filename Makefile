@@ -4,3 +4,5 @@ all:
 run:
 	g++ main.cpp ${LB} -o a.out
 	./a.out
+eval:
+	python eval.py
