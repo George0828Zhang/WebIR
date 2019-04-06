@@ -1,16 +1,17 @@
 #include <iostream>
-#include <array>
 #include <vector>
 #include <string>
 #include <cmath>
 #include <fstream>
 #include <sstream>
 #include <cassert>
-#include <numeric> //inner_product
-// #include <expat.h>
 #include "tinyxml2/tinyxml2.h"
 #include "utfcpp/source/utf8.h"
 #include "Utils.hpp"
+
+#define Okapi_k1 1.0
+#define Okapi_b 0.35
+#define Okapi_k3 5.0
 
 #define MAXCAND 100
 #define cout std::cout
@@ -35,8 +36,8 @@ public:
             cout << "WARNING: file with id " << id << " has 0 term frequency." << endl;
         float TF, dlen_norm;
         for(int j = 0; j < tid.size(); j++){
-            TF = 1 + std::log(1 + std::log(freq[j]));
-            dlen_norm = 1-s + s*(length/avgdl);
+            TF = (Okapi_k1+1)*freq[j];
+            dlen_norm = Okapi_k1*(1 - Okapi_b + Okapi_b * (length/avgdl)) + freq[j];
             freq[j] = TF/dlen_norm * IDF[tid[j]];
             norm += freq[j]*freq[j];
         }
@@ -120,7 +121,10 @@ void load_raw_TF(
 
             term_id = IDF.size();
             termDic.insert(term, term_id);
-            IDF.push_back(std::log((DOC_SZ+1)/(float)N));
+            // pivoted normalization
+            // IDF.push_back(std::log((DOC_SZ+1)/(float)N));
+            // Okapi
+            IDF.push_back(std::log((DOC_SZ - N + 0.5)/(N + 0.5)));
         }else{
 
             file_id = -1;
@@ -149,10 +153,6 @@ void load_raw_TF(
     }
 }
 
-float dot(std::vector<float> const& a, std::vector<float> const& b){
-    return std::inner_product(a.begin(), a.end(), b.begin(), 0.);
-}
-
 class Query {
 public:
     std::string qid;
@@ -179,7 +179,7 @@ public:
         _process(narrative, voc);
         _process(concepts, voc);
 
-        // normalize(IDF);
+        normalize(IDF);
     }
     float match(Document& doc){
         float out = 0.;
@@ -195,6 +195,12 @@ private:
         if(index>=0 && index < vec.size()){
             vec[index]++;
             maxFreq = std::max(maxFreq, (int)vec[index]);
+        }
+    }
+    void normalize(std::vector<float>const& IDF){
+        for(int j = 0; j < dim; j++){
+            float& qtf = vec[j];
+            qtf = ((Okapi_k3+1)*qtf / (Okapi_k3+qtf));//*IDF[j];
         }
     }
     void _process(std::string const& text, lexiTree& voc){
