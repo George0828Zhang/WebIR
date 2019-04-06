@@ -1,4 +1,5 @@
 #include <iostream>
+#include <array>
 #include <vector>
 #include <string>
 #include <cmath>
@@ -9,82 +10,43 @@
 // #include <expat.h>
 #include "tinyxml2/tinyxml2.h"
 #include "utfcpp/source/utf8.h"
-#include "Tree.hpp"
-#include "Array.hpp"
+#include "Utils.hpp"
 
 #define MAXCAND 100
 #define cout std::cout
 #define endl std::endl
 int VOCAB_SZ;
-int TERM_SZ;
 int DOC_SZ;
 
 
 class Document{
 public:
-    std::vector<float> vec;
-    int dim;
+    std::vector<int> tid;
+    std::vector<float> freq;
     int id;
     int maxFreq;
     int length;
-    Document(int i, int d): id(i), dim(d), maxFreq(0), length(0), vec(d, 0.){ };
-    void update(int index, int freq){
-        vec[index] += freq;
-        maxFreq = std::max(maxFreq, (int)vec[index]);
-        length += freq;
-    }
-    void normalize0(std::vector<float>const& IDF){
-        float alpha = 0.5;
-        float norm = 0.;
-        if(maxFreq<=0)
-            cout << "WARNING: file with id " << id << " has 0 term frequency." << endl;
-        for(int j = 0; j < dim; j++){
-            float TF = 1-alpha + alpha*vec[j]/(float)maxFreq;
-            vec[j] = TF*IDF[j];
-            norm += vec[j]*vec[j];
-        }
-
-        norm = std::sqrt(norm);
-        for(int j = 0; norm>0 && j < dim; j++){
-            vec[j] /= norm;
-        }
-    }
+    Document(int docid): id(docid), maxFreq(0), length(0) { };
+    
     void normalize(int avgdl, std::vector<float>const& IDF){
-        float s = 0.2;
+        float s = 0.7;
         float norm = 0.;
         if(maxFreq<=0)
             cout << "WARNING: file with id " << id << " has 0 term frequency." << endl;
         float TF, dlen_norm;
-        for(int j = 0; j < dim; j++){
-            if(vec[j]>0){
-                TF = 1 + std::log(1 + std::log(vec[j]));
-                dlen_norm = 1-s + s*(length/avgdl);
-                vec[j] = TF/dlen_norm * IDF[j];
-                norm += vec[j]*vec[j];
-            }
+        for(int j = 0; j < tid.size(); j++){
+            TF = 1 + std::log(1 + std::log(freq[j]));
+            dlen_norm = 1-s + s*(length/avgdl);
+            freq[j] = TF/dlen_norm * IDF[tid[j]];
+            norm += freq[j]*freq[j];
         }
 
         norm = std::sqrt(norm);
-        for(int j = 0; norm>0 && j < dim; j++){
-            vec[j] /= norm;
+        for(int j = 0; norm>0 && j < tid.size(); j++){
+            freq[j] /= norm;
         }
     }
 };
-
-
-int load_vocab_t(std::string const& name, lexiTree& trie){
-    std::fstream reader(name, std::fstream::in);
-    std::string encoding;
-    reader >> encoding;
-    cout << "[info] Vocab encoding: " << encoding << endl;
-    int n_word = 0;
-    std::string word;
-    while(std::getline(reader, word)){
-        trie.insert(word, n_word);
-        n_word++;
-    }
-    return n_word;
-}
 
 int load_vocab(std::string const& name, std::vector<std::string>& dict){
     std::fstream reader(name, std::fstream::in);
@@ -120,39 +82,66 @@ int load_filenames(std::string const& name, std::vector<std::string>& dict){
     return n_word;
 }
 
-
 void load_raw_TF(
-    std::string const& name, 
+    std::string const& name,
+    std::vector<std::string> const& vocab,
     std::vector<Document>& tfdocs,
-    std::vector<float>& IDF)
+    std::vector<float>& IDF,
+    lexiTree& termDic)
 {
-    assert(IDF.size()==TERM_SZ);
-    assert(tfdocs.size()==DOC_SZ);
+    assert(IDF.size()==0);
+    assert(tfdocs.size()==0);
+    assert(termDic.size==0);
 
+    for(int i = 0; i < DOC_SZ; i++){
+        tfdocs.push_back(Document(i));       
+    }
 
     std::fstream reader(name, std::fstream::in);
     std::string sentence;
+    int term_id = -1;
+    int vid_1, vid_2, N = 0;
+    int file_id, tf;
 
-    int vid_1 = -1, vid_2 = -1, N = 0;
+
     while(std::getline(reader, sentence)){
         if(N==0){
+            vid_1 = -1;
+            vid_2 = -1;
+
             if(!(std::stringstream(sentence) >> vid_1 >> vid_2 >> N)) exit(1);
             assert(vid_1 >= 0 && vid_1 < VOCAB_SZ);
-            IDF[vid_1] = std::log((DOC_SZ+1)/(float)N);
+            // if(vid_2==-1) continue;
+            std::string term;
+            if(vid_2==-1)
+                term = vocab[vid_1];
+            else
+                term = vocab[vid_1] + vocab[vid_2];
+
+            term_id = IDF.size();
+            termDic.insert(term, term_id);
+            IDF.push_back(std::log((DOC_SZ+1)/(float)N));
         }else{
 
-            int file_id = -1, tf = 0;
+            file_id = -1;
+            tf = 0;
 
             if(!(std::stringstream(sentence) >> file_id >> tf)) exit(1);
 
             assert(file_id >= 0 && file_id < DOC_SZ && tf >= 0);
 
-            // Unigram
             if(vid_2 == -1){
-                tfdocs[file_id].update(vid_1, tf);
+                // Unigram
+                tfdocs[file_id].tid.push_back(term_id);
+                tfdocs[file_id].freq.push_back(tf);
+                tfdocs[file_id].maxFreq = std::max(tfdocs[file_id].maxFreq, tf);
+                tfdocs[file_id].length += tf;
+            }else{
+                // Bigram
+                tfdocs[file_id].tid.push_back(term_id);
+                tfdocs[file_id].freq.push_back(tf);
+                tfdocs[file_id].maxFreq = std::max(tfdocs[file_id].maxFreq, tf);
             }
-
-            // TODO: bi-gram
 
             N--;
         }
@@ -164,15 +153,19 @@ float dot(std::vector<float> const& a, std::vector<float> const& b){
     return std::inner_product(a.begin(), a.end(), b.begin(), 0.);
 }
 
-class Query : public Document {
+class Query {
 public:
     std::string qid;
+    std::vector<float> vec;
+    int dim;
+    int id;
+    int maxFreq;
+    int length;
 
     Query(int Dim, tinyxml2::XMLElement* topicElement, 
         lexiTree& voc, 
         std::vector<float>const& IDF)
-    : Document(-1, Dim)
-    // :maxFreq(0), length(0), dim(Dim), vec(Dim, 0.)
+    :maxFreq(0), length(0), dim(Dim), vec(Dim, 0.)
     {
         std::string number = topicElement->FirstChildElement("number")->GetText();
         std::string title = topicElement->FirstChildElement("title")->GetText();
@@ -188,15 +181,30 @@ public:
 
         // normalize(IDF);
     }
+    float match(Document& doc){
+        float out = 0.;
+        for(int i = 0; i < doc.tid.size(); i++){
+            out += this->vec[doc.tid[i]] * doc.freq[i];
+        }
+        return out;
+    }
 private:
+    void update(std::string const& str, lexiTree& voc){
+        int index = voc.wordIndex(str);
+
+        if(index>=0 && index < vec.size()){
+            vec[index]++;
+            maxFreq = std::max(maxFreq, (int)vec[index]);
+        }
+    }
     void _process(std::string const& text, lexiTree& voc){
         // reference: https://stackoverflow.com/questions/2852895/c-iterate-or-split-utf-8-string-into-array-of-symbols
         char* str = (char*)text.c_str();    // utf-8 string
         char* str_i = str;                  // string iterator
         char* end = str+strlen(str)+1;      // end iterator
 
-        char symbol[] = {0,0,0,0,0};
-
+        char symbol[20] = {};
+        std::string lastword = "";
         do
         {
             uint32_t code = utf8::next(str_i, end); // get 32 bit code of a utf-8 symbol
@@ -204,12 +212,11 @@ private:
                 continue;
             char* end = utf8::append(code, symbol); // initialize array `symbol`
             
-            std::string strsym(symbol, end);
-            // cout << strsym << " ";
-            int index = voc.wordIndex(strsym);
-            if(index>=0 && index < TERM_SZ){
-                update(index, 1);
-            }
+            std::string word(symbol, end);
+            // cout << lastword + word << " ";
+            update(word, voc);
+            update(lastword+word, voc);
+            lastword = word;
         }
         while ( str_i < end );
     }
@@ -227,28 +234,29 @@ int main(int argc, char** argv){
     std::string vocab_name = "vocab.all";
     std::string doclist_name = "file-list";
     std::string freq_name = "inverted-file";
-    // std::string query_name = "query-train.xml";
-    std::string query_name = "query-test.xml";
+    std::string query_name = "query-train.xml";
+    // std::string query_name = "query-test.xml";
     std::string output_name = "ans.csv";
-    lexiTree vocab;
+    // lexiTree vocab;
     // lexiTree docname;
+    std::vector<std::string> vocab;
     std::vector<std::string> docname;
+    lexiTree bigram;
     
 
-    VOCAB_SZ = load_vocab_t(vocab_name, vocab);
+    VOCAB_SZ = load_vocab(vocab_name, vocab);
     cout << "[info] Vocab size: " << VOCAB_SZ << endl;
-    TERM_SZ = VOCAB_SZ;
     
     DOC_SZ = load_filenames(doclist_name, docname);
     cout << "[info] Document list size: " << DOC_SZ << endl;
 
     // // load raw term frequency
     std::vector<Document> TF_docs;
-    std::vector<float> IDF(TERM_SZ, 0.);
-    for(int i = 0; i < DOC_SZ; i++){
-        TF_docs.push_back(Document(i, TERM_SZ));
-    }
-    load_raw_TF(freq_name, TF_docs, IDF);
+    std::vector<float> IDF;
+
+    load_raw_TF(freq_name, vocab, TF_docs, IDF, bigram);
+    int TERM_SZ = IDF.size();
+    cout << "[info] Term size: " << TERM_SZ << endl;
 
     float avgdl = get_avg_doclen(TF_docs);
     // matrix normalization
@@ -266,11 +274,11 @@ int main(int argc, char** argv){
     writer << "query_id,retrieved_docs";
     while (topicElement != nullptr)
     {
-        Query query(TERM_SZ, topicElement, vocab, IDF);
+        Query query(TERM_SZ, topicElement, bigram, IDF);
 
         maxScores.clear();
         for(int i = 0; i < DOC_SZ; i++){
-            float score = dot(TF_docs[i].vec, query.vec);
+            float score = query.match(TF_docs[i]);
             maxScores.insert(score, i);
         }
         std::vector<int> top_candidates;
