@@ -8,13 +8,13 @@
 #include <algorithm>// std::sort
 #include <unordered_map>
 #include "tinyxml2/tinyxml2.h"
-#include "utfcpp/source/utf8.h"
+#include "utfcpp/source/utf8/checked.h"
+#include "utfcpp/source/utf8/core.h"
 #include "Utils.hpp"
 
 #define Okapi_k1 1.2
 #define Okapi_b 0.75
 #define Okapi_k3 1000.
-// #define Okapi_k3 75.
 #define IDF_epsilon 1e-4
 
 #define R_a 0.99
@@ -41,13 +41,6 @@ public:
     void normalize(int avgdl, std::vector<float>const& IDF){
         float norm = 0.;
         float TF, dlen_norm;
-
-        // for(int j = 0; j < tid.size(); j++){
-        //     TF = 1. + std::log(1. + std::log(freq[j]));
-        //     dlen_norm = 1. - P_s + P_s * (length/(float)avgdl);
-        //     freq[j] = TF/dlen_norm * IDF[tid[j]];
-        //     norm += freq[j]*freq[j];
-        // }
 
         for(int j = 0; j < tid.size(); j++){
             TF = (Okapi_k1+1.)*freq[j];
@@ -124,24 +117,16 @@ private:
             
             std::string word(symbol, end);
 
-            // if(word=="、" || word=="，" || word=="。"){
-            //     lastword = "";
-            //     continue;
-            // }
-
             // int index = voc.wordIndex(word);
             int index = ufind(voc, word);
             if(index>=0 && index < dim){
                 vec[index]++;
-                // cout << "w-" + word + " ";
             }
 
             if(lastword != "<sos>"){
-                // index = voc.wordIndex(lastword + " " + word);
                 index = ufind(voc, lastword + " " + word);
                 if(index>=0 && index < dim){
                     vec[index]++;
-                    // cout << "W-" + lastword + " " + word + " ";
                 }
             }
             lastword = word;
@@ -344,13 +329,58 @@ void feedback(
     }
 }
 
+
+void parseArgs(int argc, char** argv, 
+    std::string& model_name,
+    std::string& query_name,
+    std::string& output_name,
+    bool& best,
+    bool& feedback)
+{
+    int ready = 0;
+    for(int i = 1; i < argc; i++){
+        std::string op(argv[i]);
+        if(op=="-r"){
+            feedback = true;
+        }else if(op=="-b"){
+            best = true;
+        }else if(op=="-i"){
+            query_name = std::string(argv[++i]);
+            ready |= 1;
+        }else if(op=="-o"){
+            output_name = std::string(argv[++i]);
+            ready |= 2;
+        }else if(op=="-m"){
+            model_name = std::string(argv[++i]);
+            ready |= 4;
+        }else if(op=="-d"){
+            std::string dname = std::string(argv[++i]);
+            ready |= 8;
+        }else{
+            std::cerr << "ERROR: Argument " + op + " not understood." << endl;
+            exit(1);
+        }
+    }
+    if(ready != 15){
+        std::cerr << "ERROR: Arguments not completely specified." << endl;
+        exit(1);
+    }
+}
+
 int main(int argc, char** argv){
-    std::string vocab_name = "vocab.all";
-    std::string doclist_name = "file-list";
-    std::string freq_name = "inverted-file";
+    std::string model_name;    
     std::string query_name = "query-train.xml";
-    // std::string query_name = "query-test.xml";
     std::string output_name = "ans.csv";
+    bool USE_FEEDBACK = false;
+    bool USE_BEST = false;
+
+    parseArgs(argc, argv, model_name, query_name, output_name, USE_BEST, USE_FEEDBACK);
+
+    std::string vocab_name = model_name + "/vocab.all";
+    std::string doclist_name = model_name + "/file-list";
+    std::string freq_name = model_name + "/inverted-file";
+
+
 
     std::vector<std::string> vocab;
     std::vector<std::string> docname;
@@ -389,7 +419,7 @@ int main(int argc, char** argv){
         auto& query = QList[q];
         std::vector<int> top_candidates;
 
-        for(int k = 0; k < R_rounds; k++){
+        for(int k = 0; USE_FEEDBACK && k < R_rounds; k++){
             maxScores.clear();
             for(int i = 0; i < DOC_SZ; i++){
                 float score = query.match(TF_docs[i]);
