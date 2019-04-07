@@ -124,6 +124,10 @@ public:
 			if(l == wlen - 1){
 				if(NODE->children[c]->index == -1)
 					size += 1;
+				else{
+					std::cout << "[debug] word \"" << word << "\" has id " << NODE->children[c]->index << " and " << index << std::endl;
+					exit(1);
+				}
 				NODE->children[c]->index = index;
 			}
 
@@ -131,10 +135,10 @@ public:
 		}
 
 	}
-	int wordIndex(std::string const& word){
+	int const wordIndex(std::string const& word) const{
 		int wlen = word.size();
 		int res;
-		tnode* NODE = &_root;
+		const tnode* NODE = &_root;
 		for(int l = 0; l < wlen; l ++){
 			uchar c = word[l];
 			if(NODE->children[c] == NULL){
