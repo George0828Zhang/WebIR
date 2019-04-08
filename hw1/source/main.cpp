@@ -17,10 +17,10 @@
 #define Okapi_k3 1000.
 #define IDF_epsilon 1e-4
 
-#define R_a 0.99
-#define R_b 0.009
-#define R_c 0.001
-#define R_rounds 0
+#define R_a 1.5
+#define R_b 0.4
+#define R_c 0.1
+#define R_rounds 1
 
 #define MAXCAND 100
 #define cout std::cout
@@ -274,7 +274,7 @@ void load_queries(
     }
 }
 
-void feedback(
+void feedback0(
     Query& query,
     std::vector<Document> const& tfdocs,
     std::vector<int> const& rel)
@@ -297,6 +297,62 @@ void feedback(
             }
         }
     }
+    float norm1 = 0.;
+    for(int j = 0; j < dim; j++){
+        norm1 += query.vec[j]*query.vec[j];
+    }
+    norm1 = std::sqrt(norm1);
+
+    float norm2 = 0.;
+    for(int j = 0; j < dim; j++){
+        norm2 += pos[j]*pos[j];
+    }
+    norm2 = std::sqrt(norm2);
+
+    float norm3 = 0.;
+    for(int j = 0; j < dim; j++){
+        norm3 += neg[j]*neg[j];
+    }
+    norm3 = std::sqrt(norm3);
+
+    // float norm1 = 1., norm2 = 1., norm3 = 1.;
+
+    float norm4 = 0.;
+    for(int j = 0; j < dim; j++){
+        query.vec[j] = R_a * query.vec[j]/norm1 + R_b * pos[j]/norm2 - R_c * neg[j]/norm3;
+        norm4 += query.vec[j] * query.vec[j];
+    }
+    norm4 = std::sqrt(norm4);
+
+    for(int j = 0; j < dim; j++){
+        query.vec[j] = query.vec[j] * norm1 / norm4;
+    }
+}
+void feedback(
+    Query& query,
+    std::vector<Document> const& tfdocs,
+    std::vector<int> const& rel,
+    std::vector<int> const& irrel)
+{
+	int dim = query.vec.size();
+    std::vector<float> pos(dim, 0.);
+    std::vector<float> neg(dim, 0.);
+
+    for(auto i: rel){
+    	for(int j = 0; j < tfdocs[i].tid.size(); j++){
+            int tid = tfdocs[i].tid[j];
+            int fq = tfdocs[i].freq[j];
+            pos[tid] += fq / (float)rel.size();
+        }
+    }
+    for(auto i: irrel){
+    	for(int j = 0; j < tfdocs[i].tid.size(); j++){
+            int tid = tfdocs[i].tid[j];
+            int fq = tfdocs[i].freq[j];
+            neg[tid] += fq / (float)irrel.size();
+        }
+    }
+
     float norm1 = 0.;
     for(int j = 0; j < dim; j++){
         norm1 += query.vec[j]*query.vec[j];
@@ -410,7 +466,7 @@ int main(int argc, char** argv){
     // load_queries(query_name, bigram, QList);
     load_queries(query_name, ubigram, QList);
     Kmax<float, int> maxScores(MAXCAND);
-
+    Kmax<float, int> minScores(MAXCAND);
 
     std::fstream writer(output_name, std::fstream::out);
     writer << "query_id,retrieved_docs";
@@ -418,16 +474,22 @@ int main(int argc, char** argv){
     for(int q = 0; q < QList.size(); q++){
         auto& query = QList[q];
         std::vector<int> top_candidates;
+        std::vector<int> worst_candidates;
 
         for(int k = 0; USE_FEEDBACK && k < R_rounds; k++){
             maxScores.clear();
+            minScores.clear();
             for(int i = 0; i < DOC_SZ; i++){
                 float score = query.match(TF_docs[i]);
                 maxScores.insert(score, i);
-            }        
+                minScores.insert(-score, i);
+            }
+            // maxScores.print();
+            // minScores.print();
             maxScores.extract(top_candidates);
+            minScores.extract(worst_candidates);
 
-            feedback(query, TF_docs, top_candidates);
+            feedback(query, TF_docs, top_candidates, worst_candidates);
         }
         
         maxScores.clear();
