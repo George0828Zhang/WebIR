@@ -6,21 +6,28 @@
 #include <sstream>
 #include <cassert>
 #include <algorithm>// std::sort
+#include <glib.h>
 #include <unordered_map>
 #include "tinyxml2/tinyxml2.h"
-#include "utfcpp/source/utf8/checked.h"
-#include "utfcpp/source/utf8/core.h"
 #include "Utils.hpp"
+
+
+#define D_Title_W 1.0
+
+#define Q_Title_W 0.0
+#define Q_Question_W 0.0
+#define Q_Narrative_W 0.0
+#define Q_Concepts_W 1.0
 
 #define Okapi_k1 1.2
 #define Okapi_b 0.75
 #define Okapi_k3 1000.
 #define IDF_epsilon 1e-4
 
-#define R_a 0.8
-#define R_b 0.02
-#define R_c 0.18
-#define R_rounds 0
+#define R_a 0.90
+#define R_b 0.08
+#define R_c 0.02
+#define R_rounds 1
 
 #define MAXCAND 100
 #define cout std::cout
@@ -32,6 +39,7 @@ using UMap = std::unordered_map<std::string, int>;
 
 class Document{
 public:
+	std::string filename;
     std::vector<int> tid;
     std::vector<float> freq;
     int id;
@@ -55,6 +63,86 @@ public:
         //     freq[j] /= norm;
         // }
     }
+    void update(int term_id, float tf, bool uniq){
+    	if(!uniq){
+			for(int i = 0; i < tid.size(); i++){
+				if(tid[i]==term_id){
+					freq[i] += tf;
+					return;
+				}
+			}
+	    }
+		tid.push_back(term_id);
+	    freq.push_back(tf);
+    }
+    int getFileSize()
+	{
+		// cout << "[debug] trying " + fileName << endl;
+	    std::ifstream file(filename, std::ifstream::in | std::ifstream::binary);
+
+	    if(!file.is_open())
+	    {
+	        return -1;
+	    }
+
+	    file.seekg(0, std::ios::end);
+	    int fileSize = file.tellg();
+	    file.close();
+	    length = fileSize;
+	    return fileSize;
+	}
+	int update_title(UMap const& voc){
+		tinyxml2::XMLDocument doc;
+	    tinyxml2::XMLError eResult = doc.LoadFile(filename.c_str());
+	    tinyxml2::XMLElement* topicElement = doc.FirstChildElement("xml")->FirstChildElement("doc");
+	    if (topicElement == nullptr) cout << "ERROR: XML element parsing error." << endl;
+	    topicElement = topicElement->FirstChildElement("title");
+	    if (topicElement == nullptr) cout << "ERROR: XML element parsing error." << endl;
+	    const char* title = topicElement->GetText();
+	    if (title == nullptr)
+	    	cout << "WARNING: " + filename + " has no title!" << endl;
+	    else{
+	    	std::string stitle(title);
+	    	_process(title, voc);
+	    }
+	}
+private:
+	int ufind(UMap const& m, std::string const& w){
+        auto i = m.find(w);
+        return (i==m.end()) ? -1 : i->second;
+    }
+	void _process(std::string const& text, UMap const& voc){//, lexiTree const& voc){
+		const char* str = (char*)text.c_str();
+		
+		const char* str_i = str;
+		const char* strend;
+		g_utf8_validate(str, text.size(), &strend);
+
+		
+		std::string lastword = "<sos>";
+		do{			
+			const char* next = g_utf8_find_next_char(str_i, strend);
+			
+			if(next==NULL) break;
+
+			std::string word(str_i, next);
+			
+			int index = ufind(voc, word);
+            if(index != -1){
+                update(index, D_Title_W, false);
+            }
+            if(lastword != "<sos>"){
+                index = ufind(voc, lastword + " " + word);
+                if(index != -1){
+                	update(index, D_Title_W, false);
+                }
+            }
+            lastword = word;
+
+            str_i = next;
+		}while ( str_i < strend );
+
+    }
 };
 class Query {
 public:
@@ -76,10 +164,10 @@ public:
         std::string concepts = topicElement->FirstChildElement("concepts")->GetText();
 
         qid = std::string(number.end()-3, number.end());
-        // _process(title, voc);
-        // _process(question, voc);
-        // _process(narrative, voc);
-        _process(concepts, voc);
+        _process(title, voc, Q_Title_W);
+        _process(question, voc, Q_Question_W);
+        _process(narrative, voc, Q_Narrative_W);
+        _process(concepts, voc, Q_Concepts_W);
 
         normalize();
     }
@@ -100,38 +188,37 @@ private:
         auto i = m.find(w);
         return (i==m.end()) ? -1 : i->second;
     }
-    void _process(std::string const& text, UMap const& voc){//, lexiTree const& voc){
-        // reference: https://stackoverflow.com/questions/2852895/c-iterate-or-split-utf-8-string-into-array-of-symbols
-        char* str = (char*)text.c_str();    // utf-8 string
-        char* str_i = str;                  // string iterator
-        char* strend = str+strlen(str)+1;      // end iterator
+    void _process(std::string const& text, UMap const& voc, float weight){//, lexiTree const& voc){
+		const char* str = (char*)text.c_str();
+		
+		const char* str_i = str;
+		const char* strend;
+		g_utf8_validate(str, text.size(), &strend);
 
-        char symbol[20] = {};
-        std::string lastword = "<sos>";
-        do
-        {
-            uint32_t code = utf8::next(str_i, strend); // get 32 bit code of a utf-8 symbol
-            if (code == 0)
-                continue;
-            char* end = utf8::append(code, symbol); // initialize array `symbol`
-            
-            std::string word(symbol, end);
+		
+		std::string lastword = "<sos>";
+		do{			
+			const char* next = g_utf8_find_next_char(str_i, strend);
+			
+			if(next==NULL) break;
 
-            // int index = voc.wordIndex(word);
-            int index = ufind(voc, word);
-            if(index>=0 && index < dim){
-                vec[index]++;
+			std::string word(str_i, next);
+			
+			int index = ufind(voc, word);
+            if(index != -1){
+                vec[index] += weight;
             }
-
             if(lastword != "<sos>"){
                 index = ufind(voc, lastword + " " + word);
-                if(index>=0 && index < dim){
-                    vec[index]++;
+                if(index != -1){
+                	vec[index] += weight;
                 }
             }
             lastword = word;
-        }
-        while ( str_i < strend );
+
+            str_i = next;
+		}while ( str_i < strend );
+
     }
 };
 
@@ -151,27 +238,9 @@ void lower(std::string& in){
         c = std::tolower(c);
     }
 }
-int getFileSize(const std::string &fileName)
-{
-	// cout << "[debug] trying " + fileName << endl;
-    std::ifstream file(fileName.c_str(), std::ifstream::in | std::ifstream::binary);
 
-    if(!file.is_open())
-    {
-        return -1;
-    }
-
-    file.seekg(0, std::ios::end);
-    int fileSize = file.tellg();
-    file.close();
-
-    return fileSize;
-}
 int load_filenames(std::string const& name, std::string const& docdir, std::vector<std::string>& dict, std::vector<Document>& tfdocs){
     assert(tfdocs.size()==0);
-    // for(int i = 0; i < DOC_SZ; i++){
-
-    // }
 
     std::fstream reader(name, std::fstream::in);
     int n_word = 0;
@@ -186,7 +255,8 @@ int load_filenames(std::string const& name, std::string const& docdir, std::vect
         // load doc size
         start = word.find('/');
         tfdocs.push_back(Document(n_word));
-        tfdocs.back().length = getFileSize(docdir + std::string(word.begin()+start, word.end()));
+        tfdocs.back().filename = docdir + std::string(word.begin()+start, word.end());
+        tfdocs.back().getFileSize();
 
         n_word++;
     }
@@ -251,17 +321,18 @@ void load_raw_TF(
 
             assert(file_id >= 0 && file_id < DOC_SZ && tf >= 0);
 
-            if(vid_2 == -1){
-                // Unigram
-                tfdocs[file_id].tid.push_back(term_id);
-                tfdocs[file_id].freq.push_back(tf);
-                // tfdocs[file_id].length += tf;// * vocab[vid_1].size();
-            }else{
-                // Bigram
-                tfdocs[file_id].tid.push_back(term_id);
-                tfdocs[file_id].freq.push_back(tf);
-                // tfdocs[file_id].length += tf;
-            }
+            // if(vid_2 == -1){
+            //     // Unigram
+            //     tfdocs[file_id].tid.push_back(term_id);
+            //     tfdocs[file_id].freq.push_back(tf);
+            //     // tfdocs[file_id].length += tf;// * vocab[vid_1].size();
+            // }else{
+            //     // Bigram
+            //     tfdocs[file_id].tid.push_back(term_id);
+            //     tfdocs[file_id].freq.push_back(tf);
+            //     // tfdocs[file_id].length += tf;
+            // }
+            tfdocs[file_id].update(term_id, tf, true);
 
             N--;
         }
@@ -414,6 +485,9 @@ int main(int argc, char** argv){
     int TERM_SZ = IDF.size();
     cout << "[info] Term size: " << TERM_SZ << endl;
     // assert(TERM_SZ==bigram.size);
+    for(auto& d : TF_docs){    	
+    	d.update_title(ubigram);
+    }
 
     cout << "[info] Average doc length (bytes): " << normalize_docs(TF_docs, IDF) << endl;    
 

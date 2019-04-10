@@ -13,17 +13,21 @@ template <class T1, class T2>
 class
 Kmax
 {// maintain a min heap
-private:
+// private:
+protected:
 	int _nelem;
 	int _capacity;
 	std::vector<T1> _key;
 	std::vector<T2> _data;
-
+	bool comp(T1 const& a, T1 const& b){
+		return a < b;
+	}
 	void UpHeap(){
 		int i = _nelem - 1;
 		while(i > 0){
 			int p = (i - 1)/2;
-			if(_key[p] > _key[i]){
+			// if(_key[p] > _key[i]){
+			if(!comp(_key[p], _key[i])){
 				std::swap (_key[p], _key[i]);
 				std::swap (_data[p], _data[i]);
 				i = p;
@@ -34,9 +38,11 @@ private:
 		int i = at;		
 		while((2 * i + 1) < stop){
 			int chd = 2 * i + 1;
-			if(chd + 1 < stop && _key[chd + 1] < _key[chd])
+			// if(chd + 1 < stop && _key[chd + 1] < _key[chd])
+			if(chd + 1 < stop && comp(_key[chd + 1], _key[chd]))			
 				chd = chd + 1;
-			if(_key[chd] < _key[i]){
+			// if(_key[chd] < _key[i]){
+			if(comp(_key[chd], _key[i])){
 				std::swap (_key[chd], _key[i]);
 				std::swap (_data[chd], _data[i]);
 				i = chd;
@@ -57,7 +63,8 @@ public:
 				_nelem++;
 				UpHeap();
 				return true;
-			}else if(_key[0] < key){
+			// }else if(_key[0] < key){
+			}else if(comp(_key[0], key)){
 				_key[0] = key;
 				_data[0] = data;
 				MinHeapify(0, _nelem);
