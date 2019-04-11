@@ -12,6 +12,22 @@
 #include "Utils.hpp"
 
 
+float Bigram_W = 1.0;
+
+// 0.86 0.8094072423151067
+// 0.88 0.8103558335789259
+// 0.90 0.8102653929168874
+// 0.92 0.8097741176853323
+// 0.94 0.8091703304191998
+
+// 0.8081820468211273
+// #define Bigram_W 1.01 0.8069143232240883
+// #define Bigram_W 1.02 0.8068439489989323
+// 0.8068878664341542
+// 0.8068439911066675
+// 0.8065753452304847
+// 0.8062689701659314
+
 #define D_Title_W 1.0
 
 #define Q_Title_W 0.0
@@ -24,9 +40,9 @@
 #define Okapi_k3 1000.
 #define IDF_epsilon 1e-4
 
-#define R_a 0.90
-#define R_b 0.08
-#define R_c 0.02
+#define R_a 0.9
+#define R_b 0.001
+#define R_c 0.099
 #define R_rounds 1
 
 #define MAXCAND 100
@@ -47,21 +63,16 @@ public:
     Document(int docid): id(docid), length(0) { };
     
     void normalize(int avgdl, std::vector<float>const& IDF){
-        float norm = 0.;
         float TF, dlen_norm;
 
         for(int j = 0; j < tid.size(); j++){
             TF = (Okapi_k1+1.)*freq[j];
             dlen_norm = Okapi_k1*(1. - Okapi_b + Okapi_b * (length/(float)avgdl)) + freq[j];
+            // TF = 1. + std::log(1. + std::log(freq[j]));
+            // dlen_norm = 1. - Okapi_b + Okapi_b * (length/(float)avgdl);
             freq[j] = TF/dlen_norm * IDF[tid[j]];
             assert(freq[j] > 0);
-            norm += freq[j]*freq[j];
         }
-
-        // norm = std::sqrt(norm);
-        // for(int j = 0; norm>0 && j < tid.size(); j++){
-        //     freq[j] /= norm;
-        // }
     }
     void update(int term_id, float tf, bool uniq){
     	if(!uniq){
@@ -77,8 +88,7 @@ public:
     }
     int getFileSize()
 	{
-		// cout << "[debug] trying " + fileName << endl;
-	    std::ifstream file(filename, std::ifstream::in | std::ifstream::binary);
+		std::ifstream file(filename, std::ifstream::in | std::ifstream::binary);
 
 	    if(!file.is_open())
 	    {
@@ -134,7 +144,7 @@ private:
             if(lastword != "<sos>"){
                 index = ufind(voc, lastword + " " + word);
                 if(index != -1){
-                	update(index, D_Title_W, false);
+                	update(index, D_Title_W * Bigram_W, false);
                 }
             }
             lastword = word;
@@ -164,9 +174,9 @@ public:
         std::string concepts = topicElement->FirstChildElement("concepts")->GetText();
 
         qid = std::string(number.end()-3, number.end());
-        _process(title, voc, Q_Title_W);
-        _process(question, voc, Q_Question_W);
-        _process(narrative, voc, Q_Narrative_W);
+        if(Q_Title_W) _process(title, voc, Q_Title_W);
+        if(Q_Question_W) _process(question, voc, Q_Question_W);
+        if(Q_Narrative_W) _process(narrative, voc, Q_Narrative_W);
         _process(concepts, voc, Q_Concepts_W);
 
         normalize();
@@ -211,7 +221,7 @@ private:
             if(lastword != "<sos>"){
                 index = ufind(voc, lastword + " " + word);
                 if(index != -1){
-                	vec[index] += weight;
+                	vec[index] += weight * Bigram_W;
                 }
             }
             lastword = word;
@@ -321,18 +331,14 @@ void load_raw_TF(
 
             assert(file_id >= 0 && file_id < DOC_SZ && tf >= 0);
 
-            // if(vid_2 == -1){
-            //     // Unigram
-            //     tfdocs[file_id].tid.push_back(term_id);
-            //     tfdocs[file_id].freq.push_back(tf);
-            //     // tfdocs[file_id].length += tf;// * vocab[vid_1].size();
-            // }else{
-            //     // Bigram
-            //     tfdocs[file_id].tid.push_back(term_id);
-            //     tfdocs[file_id].freq.push_back(tf);
-            //     // tfdocs[file_id].length += tf;
-            // }
-            tfdocs[file_id].update(term_id, tf, true);
+            if(vid_2 == -1){
+                // Unigram
+                tfdocs[file_id].update(term_id, tf, true);
+            }else{
+                // Bigram
+                tfdocs[file_id].update(term_id, tf * Bigram_W, true);
+            }
+            // tfdocs[file_id].update(term_id, tf, true);
 
             N--;
         }
@@ -343,7 +349,7 @@ void load_raw_TF(
 float normalize_docs(std::vector<Document>& docs, std::vector<float>const& IDF){
     float avgdl = 0.;
     for(auto& d : docs){
-        avgdl += d.length;// / (float)docs.size();
+        avgdl += d.length;
     }
     avgdl /= (float)docs.size();
 
@@ -424,6 +430,8 @@ void parseArgs(int argc, char** argv,
             feedback = true;
         }else if(op=="-b"){
             best = true;
+            Bigram_W = 0.88;
+            feedback = true;
         }else if(op=="-i"){
             query_name = std::string(argv[++i]);
             ready |= 1;
@@ -480,11 +488,9 @@ int main(int argc, char** argv){
     DOC_SZ = load_filenames(doclist_name, docdir_name, docname, TF_docs);
     cout << "[info] Document list size: " << DOC_SZ << endl;
 
-    // load_raw_TF(freq_name, vocab, TF_docs, IDF, bigram);
     load_raw_TF(freq_name, vocab, TF_docs, IDF, ubigram);
     int TERM_SZ = IDF.size();
     cout << "[info] Term size: " << TERM_SZ << endl;
-    // assert(TERM_SZ==bigram.size);
     for(auto& d : TF_docs){    	
     	d.update_title(ubigram);
     }
@@ -492,7 +498,6 @@ int main(int argc, char** argv){
     cout << "[info] Average doc length (bytes): " << normalize_docs(TF_docs, IDF) << endl;    
 
     std::vector<Query> QList;
-    // load_queries(query_name, bigram, QList);
     load_queries(query_name, ubigram, QList);
     Kmax<float, int> maxScores(MAXCAND);
     Kmax<float, int> minScores(MAXCAND);
@@ -513,8 +518,6 @@ int main(int argc, char** argv){
                 maxScores.insert(score, i);
                 minScores.insert(-score, i);
             }
-            // maxScores.print();
-            // minScores.print();
             maxScores.extract(top_candidates);
             minScores.extract(worst_candidates);
 
