@@ -6,21 +6,44 @@
 #include <sstream>
 #include <cassert>
 #include <algorithm>// std::sort
+#include <glib.h>
 #include <unordered_map>
 #include "tinyxml2/tinyxml2.h"
-#include "utfcpp/source/utf8/checked.h"
-#include "utfcpp/source/utf8/core.h"
 #include "Utils.hpp"
+
+
+float Bigram_W = 1.0;
+
+// 0.86 0.8094072423151067
+// 0.88 0.8103558335789259
+// 0.90 0.8102653929168874
+// 0.92 0.8097741176853323
+// 0.94 0.8091703304191998
+
+// 0.8081820468211273
+// #define Bigram_W 1.01 0.8069143232240883
+// #define Bigram_W 1.02 0.8068439489989323
+// 0.8068878664341542
+// 0.8068439911066675
+// 0.8065753452304847
+// 0.8062689701659314
+
+#define D_Title_W 1.0
+
+#define Q_Title_W 0.0
+#define Q_Question_W 0.0
+#define Q_Narrative_W 0.0
+#define Q_Concepts_W 1.0
 
 #define Okapi_k1 1.2
 #define Okapi_b 0.75
 #define Okapi_k3 1000.
 #define IDF_epsilon 1e-4
 
-#define R_a 0.99
-#define R_b 0.009
-#define R_c 0.001
-#define R_rounds 0
+#define R_a 0.9
+#define R_b 0.001
+#define R_c 0.099
+#define R_rounds 1
 
 #define MAXCAND 100
 #define cout std::cout
@@ -32,6 +55,7 @@ using UMap = std::unordered_map<std::string, int>;
 
 class Document{
 public:
+	std::string filename;
     std::vector<int> tid;
     std::vector<float> freq;
     int id;
@@ -39,21 +63,95 @@ public:
     Document(int docid): id(docid), length(0) { };
     
     void normalize(int avgdl, std::vector<float>const& IDF){
-        float norm = 0.;
         float TF, dlen_norm;
 
         for(int j = 0; j < tid.size(); j++){
             TF = (Okapi_k1+1.)*freq[j];
             dlen_norm = Okapi_k1*(1. - Okapi_b + Okapi_b * (length/(float)avgdl)) + freq[j];
+            // TF = 1. + std::log(1. + std::log(freq[j]));
+            // dlen_norm = 1. - Okapi_b + Okapi_b * (length/(float)avgdl);
             freq[j] = TF/dlen_norm * IDF[tid[j]];
             assert(freq[j] > 0);
-            norm += freq[j]*freq[j];
         }
+    }
+    void update(int term_id, float tf, bool uniq){
+    	if(!uniq){
+			for(int i = 0; i < tid.size(); i++){
+				if(tid[i]==term_id){
+					freq[i] += tf;
+					return;
+				}
+			}
+	    }
+		tid.push_back(term_id);
+	    freq.push_back(tf);
+    }
+    int getFileSize()
+	{
+		std::ifstream file(filename, std::ifstream::in | std::ifstream::binary);
 
-        // norm = std::sqrt(norm);
-        // for(int j = 0; norm>0 && j < tid.size(); j++){
-        //     freq[j] /= norm;
-        // }
+	    if(!file.is_open())
+	    {
+	        return -1;
+	    }
+
+	    file.seekg(0, std::ios::end);
+	    int fileSize = file.tellg();
+	    file.close();
+	    length = fileSize;
+	    return fileSize;
+	}
+	int update_title(UMap const& voc){
+		tinyxml2::XMLDocument doc;
+	    tinyxml2::XMLError eResult = doc.LoadFile(filename.c_str());
+	    tinyxml2::XMLElement* topicElement = doc.FirstChildElement("xml")->FirstChildElement("doc");
+	    if (topicElement == nullptr) cout << "ERROR: XML element parsing error." << endl;
+	    topicElement = topicElement->FirstChildElement("title");
+	    if (topicElement == nullptr) cout << "ERROR: XML element parsing error." << endl;
+	    const char* title = topicElement->GetText();
+	    if (title == nullptr)
+	    	cout << "WARNING: " + filename + " has no title!" << endl;
+	    else{
+	    	std::string stitle(title);
+	    	_process(title, voc);
+	    }
+	}
+private:
+	int ufind(UMap const& m, std::string const& w){
+        auto i = m.find(w);
+        return (i==m.end()) ? -1 : i->second;
+    }
+	void _process(std::string const& text, UMap const& voc){//, lexiTree const& voc){
+		const char* str = (char*)text.c_str();
+		
+		const char* str_i = str;
+		const char* strend;
+		g_utf8_validate(str, text.size(), &strend);
+
+		
+		std::string lastword = "<sos>";
+		do{			
+			const char* next = g_utf8_find_next_char(str_i, strend);
+			
+			if(next==NULL) break;
+
+			std::string word(str_i, next);
+			
+			int index = ufind(voc, word);
+            if(index != -1){
+                update(index, D_Title_W, false);
+            }
+            if(lastword != "<sos>"){
+                index = ufind(voc, lastword + " " + word);
+                if(index != -1){
+                	update(index, D_Title_W * Bigram_W, false);
+                }
+            }
+            lastword = word;
+
+            str_i = next;
+		}while ( str_i < strend );
+
     }
 };
 class Query {
@@ -76,10 +174,10 @@ public:
         std::string concepts = topicElement->FirstChildElement("concepts")->GetText();
 
         qid = std::string(number.end()-3, number.end());
-        _process(title, voc);
-        // _process(question, voc);
-        // _process(narrative, voc);
-        _process(concepts, voc);
+        if(Q_Title_W) _process(title, voc, Q_Title_W);
+        if(Q_Question_W) _process(question, voc, Q_Question_W);
+        if(Q_Narrative_W) _process(narrative, voc, Q_Narrative_W);
+        _process(concepts, voc, Q_Concepts_W);
 
         normalize();
     }
@@ -100,38 +198,37 @@ private:
         auto i = m.find(w);
         return (i==m.end()) ? -1 : i->second;
     }
-    void _process(std::string const& text, UMap const& voc){//, lexiTree const& voc){
-        // reference: https://stackoverflow.com/questions/2852895/c-iterate-or-split-utf-8-string-into-array-of-symbols
-        char* str = (char*)text.c_str();    // utf-8 string
-        char* str_i = str;                  // string iterator
-        char* strend = str+strlen(str)+1;      // end iterator
+    void _process(std::string const& text, UMap const& voc, float weight){//, lexiTree const& voc){
+		const char* str = (char*)text.c_str();
+		
+		const char* str_i = str;
+		const char* strend;
+		g_utf8_validate(str, text.size(), &strend);
 
-        char symbol[20] = {};
-        std::string lastword = "<sos>";
-        do
-        {
-            uint32_t code = utf8::next(str_i, strend); // get 32 bit code of a utf-8 symbol
-            if (code == 0)
-                continue;
-            char* end = utf8::append(code, symbol); // initialize array `symbol`
-            
-            std::string word(symbol, end);
+		
+		std::string lastword = "<sos>";
+		do{			
+			const char* next = g_utf8_find_next_char(str_i, strend);
+			
+			if(next==NULL) break;
 
-            // int index = voc.wordIndex(word);
-            int index = ufind(voc, word);
-            if(index>=0 && index < dim){
-                vec[index]++;
+			std::string word(str_i, next);
+			
+			int index = ufind(voc, word);
+            if(index != -1){
+                vec[index] += weight;
             }
-
             if(lastword != "<sos>"){
                 index = ufind(voc, lastword + " " + word);
-                if(index>=0 && index < dim){
-                    vec[index]++;
+                if(index != -1){
+                	vec[index] += weight * Bigram_W;
                 }
             }
             lastword = word;
-        }
-        while ( str_i < strend );
+
+            str_i = next;
+		}while ( str_i < strend );
+
     }
 };
 
@@ -152,7 +249,9 @@ void lower(std::string& in){
     }
 }
 
-int load_filenames(std::string const& name, std::vector<std::string>& dict){
+int load_filenames(std::string const& name, std::string const& docdir, std::vector<std::string>& dict, std::vector<Document>& tfdocs){
+    assert(tfdocs.size()==0);
+
     std::fstream reader(name, std::fstream::in);
     int n_word = 0;
     std::string word;
@@ -162,10 +261,19 @@ int load_filenames(std::string const& name, std::vector<std::string>& dict){
         std::string tmp(word.begin()+start, word.end());
         lower(tmp);
         dict.push_back(tmp);
+
+        // load doc size
+        start = word.find('/');
+        tfdocs.push_back(Document(n_word));
+        tfdocs.back().filename = docdir + std::string(word.begin()+start, word.end());
+        tfdocs.back().getFileSize();
+
         n_word++;
     }
     return n_word;
 }
+
+
 
 void load_raw_TF(
     std::string const& name,
@@ -176,13 +284,10 @@ void load_raw_TF(
     UMap& termDic)
 {
     assert(IDF.size()==0);
-    assert(tfdocs.size()==0);
+    assert(tfdocs.size()==DOC_SZ);
     // assert(termDic.size==0);
     assert(termDic.empty());
 
-    for(int i = 0; i < DOC_SZ; i++){
-        tfdocs.push_back(Document(i));       
-    }
 
     std::fstream reader(name, std::fstream::in);
     std::string sentence;
@@ -228,15 +333,12 @@ void load_raw_TF(
 
             if(vid_2 == -1){
                 // Unigram
-                tfdocs[file_id].tid.push_back(term_id);
-                tfdocs[file_id].freq.push_back(tf);
-                tfdocs[file_id].length += tf * vocab[vid_1].size();
+                tfdocs[file_id].update(term_id, tf, true);
             }else{
                 // Bigram
-                tfdocs[file_id].tid.push_back(term_id);
-                tfdocs[file_id].freq.push_back(tf);
-                // tfdocs[file_id].length += tf;
+                tfdocs[file_id].update(term_id, tf * Bigram_W, true);
             }
+            // tfdocs[file_id].update(term_id, tf, true);
 
             N--;
         }
@@ -247,7 +349,7 @@ void load_raw_TF(
 float normalize_docs(std::vector<Document>& docs, std::vector<float>const& IDF){
     float avgdl = 0.;
     for(auto& d : docs){
-        avgdl += d.length;// / (float)docs.size();
+        avgdl += d.length;
     }
     avgdl /= (float)docs.size();
 
@@ -277,61 +379,45 @@ void load_queries(
 void feedback(
     Query& query,
     std::vector<Document> const& tfdocs,
-    std::vector<int> const& rel)
+    std::vector<int> const& rel,
+    std::vector<int> const& irrel)
 {
-    std::vector<bool> relmap(DOC_SZ, false);
-    for(auto i: rel)
-        relmap[i] = true;
-    int dim = query.vec.size();
+	int dim = query.vec.size();
     std::vector<float> pos(dim, 0.);
     std::vector<float> neg(dim, 0.);
 
-    for(int i = 0; i < DOC_SZ; i++){
-        for(int j = 0; j < tfdocs[i].tid.size(); j++){
+    for(auto i: rel){
+    	for(int j = 0; j < tfdocs[i].tid.size(); j++){
             int tid = tfdocs[i].tid[j];
             int fq = tfdocs[i].freq[j];
-            if(relmap[i]){
-                pos[tid] += fq / (float)rel.size();
-            }else{
-                neg[tid] += fq / (float)(DOC_SZ - rel.size());
-            }
+            pos[tid] += fq / (float)rel.size();
         }
     }
-    float norm1 = 0.;
-    for(int j = 0; j < dim; j++){
-        norm1 += query.vec[j]*query.vec[j];
+    for(auto i: irrel){
+    	for(int j = 0; j < tfdocs[i].tid.size(); j++){
+            int tid = tfdocs[i].tid[j];
+            int fq = tfdocs[i].freq[j];
+            neg[tid] += fq / (float)irrel.size();
+        }
     }
-    norm1 = std::sqrt(norm1);
-
-    float norm2 = 0.;
-    for(int j = 0; j < dim; j++){
-        norm2 += pos[j]*pos[j];
-    }
-    norm2 = std::sqrt(norm2);
-
-    float norm3 = 0.;
-    for(int j = 0; j < dim; j++){
-        norm3 += neg[j]*neg[j];
-    }
-    norm3 = std::sqrt(norm3);
-
-    // float norm1 = 1., norm2 = 1., norm3 = 1.;
 
     float norm4 = 0.;
     for(int j = 0; j < dim; j++){
-        query.vec[j] = R_a * query.vec[j]/norm1 + R_b * pos[j]/norm2 - R_c * neg[j]/norm3;
+        query.vec[j] = R_a * query.vec[j] + R_b * pos[j] - R_c * neg[j];
+        query.vec[j] = std::max(0.0001f, query.vec[j]);
         norm4 += query.vec[j] * query.vec[j];
     }
     norm4 = std::sqrt(norm4);
 
     for(int j = 0; j < dim; j++){
-        query.vec[j] = query.vec[j] * norm1 / norm4;
+        query.vec[j] = query.vec[j] / norm4;
     }
 }
 
 
 void parseArgs(int argc, char** argv, 
     std::string& model_name,
+    std::string& docdir_name,
     std::string& query_name,
     std::string& output_name,
     bool& best,
@@ -344,6 +430,8 @@ void parseArgs(int argc, char** argv,
             feedback = true;
         }else if(op=="-b"){
             best = true;
+            Bigram_W = 0.88;
+            feedback = true;
         }else if(op=="-i"){
             query_name = std::string(argv[++i]);
             ready |= 1;
@@ -354,7 +442,7 @@ void parseArgs(int argc, char** argv,
             model_name = std::string(argv[++i]);
             ready |= 4;
         }else if(op=="-d"){
-            std::string dname = std::string(argv[++i]);
+            docdir_name = std::string(argv[++i]);
             ready |= 8;
         }else{
             std::cerr << "ERROR: Argument " + op + " not understood." << endl;
@@ -368,13 +456,14 @@ void parseArgs(int argc, char** argv,
 }
 
 int main(int argc, char** argv){
-    std::string model_name;    
+    std::string model_name;  
+    std::string docdir_name;    
     std::string query_name = "query-train.xml";
     std::string output_name = "ans.csv";
     bool USE_FEEDBACK = false;
     bool USE_BEST = false;
 
-    parseArgs(argc, argv, model_name, query_name, output_name, USE_BEST, USE_FEEDBACK);
+    parseArgs(argc, argv, model_name, docdir_name, query_name, output_name, USE_BEST, USE_FEEDBACK);
 
     std::string vocab_name = model_name + "/vocab.all";
     std::string doclist_name = model_name + "/file-list";
@@ -391,26 +480,27 @@ int main(int argc, char** argv){
     VOCAB_SZ = load_vocab(vocab_name, vocab);
     cout << "[info] Vocab size: " << VOCAB_SZ << endl;
     
-    DOC_SZ = load_filenames(doclist_name, docname);
-    cout << "[info] Document list size: " << DOC_SZ << endl;
-
+    
     // // load raw term frequency
     std::vector<Document> TF_docs;
     std::vector<float> IDF;
 
-    // load_raw_TF(freq_name, vocab, TF_docs, IDF, bigram);
+    DOC_SZ = load_filenames(doclist_name, docdir_name, docname, TF_docs);
+    cout << "[info] Document list size: " << DOC_SZ << endl;
+
     load_raw_TF(freq_name, vocab, TF_docs, IDF, ubigram);
     int TERM_SZ = IDF.size();
     cout << "[info] Term size: " << TERM_SZ << endl;
-    // assert(TERM_SZ==bigram.size);
+    for(auto& d : TF_docs){    	
+    	d.update_title(ubigram);
+    }
 
     cout << "[info] Average doc length (bytes): " << normalize_docs(TF_docs, IDF) << endl;    
 
     std::vector<Query> QList;
-    // load_queries(query_name, bigram, QList);
     load_queries(query_name, ubigram, QList);
     Kmax<float, int> maxScores(MAXCAND);
-
+    Kmax<float, int> minScores(MAXCAND);
 
     std::fstream writer(output_name, std::fstream::out);
     writer << "query_id,retrieved_docs";
@@ -418,16 +508,20 @@ int main(int argc, char** argv){
     for(int q = 0; q < QList.size(); q++){
         auto& query = QList[q];
         std::vector<int> top_candidates;
+        std::vector<int> worst_candidates;
 
         for(int k = 0; USE_FEEDBACK && k < R_rounds; k++){
             maxScores.clear();
+            minScores.clear();
             for(int i = 0; i < DOC_SZ; i++){
                 float score = query.match(TF_docs[i]);
                 maxScores.insert(score, i);
-            }        
+                minScores.insert(-score, i);
+            }
             maxScores.extract(top_candidates);
+            minScores.extract(worst_candidates);
 
-            feedback(query, TF_docs, top_candidates);
+            feedback(query, TF_docs, top_candidates, worst_candidates);
         }
         
         maxScores.clear();
